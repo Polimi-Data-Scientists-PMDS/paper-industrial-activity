@@ -1,5 +1,9 @@
 """GEE functions.
 
+Modified by the PMDS Illegal Fishing Detector team (2026): public water
+masks (MODIS, JRC) with the shore buffer computed on the fly, scene search
+restricted to a region, Earth Engine initialisation helper.
+
 """
 import math
 from datetime import datetime, timedelta
@@ -9,9 +13,14 @@ import ee
 import numpy as np
 import pandas as pd
 
-# Uncomment to set a different account
-# ee.Authenticate()
-# ee.Initialize()
+
+def initialize(project_id):
+    """Initialise Earth Engine, authenticating on first use."""
+    try:
+        ee.Initialize(project=project_id)
+    except Exception:
+        ee.Authenticate()
+        ee.Initialize(project=project_id)
 
 
 def get_image(scene_id, collection="COPERNICUS/S1_GRD"):
@@ -22,19 +31,67 @@ def get_image(scene_id, collection="COPERNICUS/S1_GRD"):
 
 def get_ocean_vector(ocean_vector_uri):
     """Ocean polygon to identify scenes that touch the ocean."""
+    if ocean_vector_uri == "GLOBAL_OCEAN":
+        return ee.FeatureCollection(
+            [ee.Feature(ee.Geometry.Rectangle([-180, -90, 180, 90]), {"name": "ocean"})]
+        )
     return ee.FeatureCollection(ocean_vector_uri)
 
 
-def get_water_raster(ocean_raster_uri, shore_buffer):
+def get_water_raster(ocean_raster_uri, shore_buffer, geometry=None):
     """Water raster to mask ocean area minus buffer.
 
-    Invert land and ocean values, so ocean=1 and land=0
+    Invert land and ocean values, so ocean=1 and land=0.
     Distance from shore raster (b1 = 1km, b2 = 2km, etc)
     """
-    ocean_raster = ee.Image(ocean_raster_uri).subtract(1)
-    return ocean_raster.where(ocean_raster.eq(-1), 1).select(
-        f"b{shore_buffer}"
-    )
+    if "MOD44W" in ocean_raster_uri:
+        # MODIS water mask: 1=water, 0=land
+        ocean_raster = (
+            ee.ImageCollection(ocean_raster_uri)
+            .filterDate("2015-01-01", "2015-12-31")
+            .first()
+            .select("water_mask")
+        )
+    elif "GlobalSurfaceWater" in ocean_raster_uri:
+        # JRC GSW: max_extent band (1=water, 0=land)
+        ocean_raster = ee.Image(ocean_raster_uri).select("max_extent")
+    else:
+        # Custom GFW asset with pre-computed distance bands (b1, b2, etc)
+        # Assuming values 1=land, 2=ocean
+        img = ee.Image(ocean_raster_uri)
+        try:
+            # Check if distance bands exist
+            _ = img.select(f"b{shore_buffer}").getInfo()
+            ocean_raster = img.subtract(1)
+            water_mask = ocean_raster.where(ocean_raster.eq(-1), 1).select(
+                f"b{shore_buffer}"
+            )
+            if geometry:
+                water_mask = water_mask.clip(geometry)
+            return water_mask
+        except Exception:
+            # Fallback if distance bands are missing
+            ocean_raster = img
+
+    # Clip before buffering to improve performance
+    if geometry:
+        ocean_raster = ocean_raster.clip(geometry)
+
+    # For public masks (1=water, 0=land), compute buffer if shore_buffer > 0
+    if shore_buffer > 0:
+        # Force calculation at a coarser scale (250m) to prevent 
+        # timeouts and slow performance at native scene resolution.
+        return (
+            ocean_raster.reproject(crs="EPSG:4326", scale=250)
+            .focal_min(
+                radius=shore_buffer * 1000,
+                kernelType="circle",
+                units="meters",
+            )
+            .resample("bilinear")
+        )
+
+    return ocean_raster
 
 
 def get_scenes_over_ocean(
@@ -42,9 +99,11 @@ def get_scenes_over_ocean(
     ocean_vector,
     satellite="",
     collection="COPERNICUS/S1_GRD",
+    region=None,
 ):
     """Get one full day of imagery over ocean areas.
 
+    If `region` is given, only scenes intersecting it are returned.
     Return list of scene IDs.
 
     """
@@ -69,11 +128,13 @@ def get_scenes_over_ocean(
         )
         .filter(ee.Filter.eq("resolution", "H"))
     )
+    if region is not None:
+        inputCollection = inputCollection.filterBounds(to_geometry(region))
     # Get image ids that overlap with the ocean: gee -> pandas -> list
     gee_l = ee.List(inputCollection.aggregate_array("system:index"))
     df = pd.DataFrame({"scene_id": gee_l.getInfo()})
     scenes = list(df["scene_id"])
-    if satellite:
+    if satellite in ("S1A", "S1B"):
         scenes = [s for s in scenes if s[:3] == satellite]
     return scenes
 
