@@ -23,9 +23,7 @@ window_outer: 600
 # time interval for composite (date1, date2)
 window_date: []
 
-days_to_process: 1
-
-date: '2019-07-16'
+date: null
 
 include_stats: false
 
@@ -45,55 +43,23 @@ tile_dy: null
 
 dialation_radius: 60
 
-# Project to use with Google services (GCS, BQ)
+# Google Cloud project used for Earth Engine and Cloud Storage.
+# Overridden by the GCP_PROJECT environment variable.
 
-project_id: project-id
+project_id: null
 
-# Suffix for BQ's root data storage (project_bq_version)
+# Cloud Storage bucket where Earth Engine exports the detections.
+# Overridden by the GCS_BUCKET environment variable.
 
-dataset_prefix: proj_sentinel1_
+bucket: null
 
-# Prefix for BQ table name: table_prefix_YYYYMMDD
+# Top-level folder in the bucket for this generation of runs
 
-table_prefix: ''
-
-# Bucket in GCS to upload detections
-
-bucket: gfw-sentinel-1-detections
-
-# Bucket in bigquery where the data is stored. Don't change this!
-
-version: v20210924
+version: v20260325
 
 # Subbucket: key "directory" under GCS bucket
 # if empty, it gets created with above params in the name
 subbucket: ''
-
-# The vessel info table for matching detections
-
-vi_table: gfw_research.vi_ssvid_v20200801
-
-# The AIS table for matching detections
-
-ais_table: null
-
-# The VMS tables for matching detections
-
-vms_tables:
-  - pipe_panama_production_v20200331
-  - pipe_peru_production_v20200324
-  - pipe_mexico_production_v20190912
-  - pipe_namibia_production_v20190207
-  - pipe_chile_production_v20200331
-  - pipe_indonesia_production_v20200320
-
-# Local folder to store data (e.g. detections from GCS)
-
-data_dir: data
-
-# Local folder to store assest (e.g. jinja2, SQL)
-
-asset_dir: assets
 
 # Local folder to store parameters and failed task logs
 
@@ -105,19 +71,21 @@ param_prefix: PARAMS_
 
 log_prefix: SCENES_
 
-# Ocean polygon to identify SAR scenes that touch the ocean
+# Ocean polygon to identify SAR scenes that touch the ocean.
+# GLOBAL_OCEAN is a world rectangle; the water raster below does the masking.
 
-ocean_vector_uri: users/brianwong-gfw/ikea/ne_110m_ocean
+ocean_vector_uri: GLOBAL_OCEAN
 
-# Ocean raster for masking usage on per scene basis
+# Public water mask used to remove land, with a shore buffer computed on the fly.
+# Also supported: JRC/GSW1_4/GlobalSurfaceWater
 
-ocean_raster_uri: users/brianwong-gfw/ikea/olr/ocean-land-mask-100m-v20190514
+ocean_raster_uri: MODIS/006/MOD44W
 
 # Buffer shoreline with 1, 2, 3... (km)
 
 shore_buffer: 1
 
-# Generate and export detection footprints (m)
+# Detection footprint (ocean area actually imaged in a scene)
 
 foot_buffer: 500
 
@@ -128,35 +96,27 @@ foot_percentile: 1
 foot_usevv: false
 
 # Use single scene for test run
-# If both 'the_date' and 'scene_id' are defined, it gives priority to scene_id
+# If both 'date' and 'scene_id' are defined, it gives priority to scene_id
 
 scene_id: null
-  # S1A_IW_GRDH_1SDV_20170910T223314_20170910T223339_018319_01ED20_6321  # lots of vessels
 
-# Geometry to clip scene (leave empty for full scene)
-# It can be copied 'as is' from the JS GUI and pasted here.
+# Area of interest. Set by the run scripts from the `regions` table below.
+
+region_name: null
 
 region_id: null
 
 region: null
-#    [    # for img 9A36
-#         [-24.237718152863483, 65.18916351936846],
-#         [-24.237718152863483, 64.63366996996768],
-#         [-22.952317762238486, 64.63366996996768],
-#         [-22.952317762238486, 65.18916351936846],
-#    ]
-#
-#   [    # for img BE09
-#        [-157.496489437479, 58.87201830307525],
-#        [-157.496489437479, 58.53960864360592],
-#        [-156.97738543357275, 58.53960864360592],
-#        [-156.97738543357275, 58.87201830307525],
-#    ]
 
-# Step in the pipeline. As params files get upload,
-# matched and evaluated these get updated.
+# Named areas of interest.
+#   bbox: [lon_min, lat_min, lon_max, lat_max] in degrees (WGS84);
+#         width and height in whole degrees (composites are split in 1x1 tiles)
+#   srid: metric projection used for distance-based clustering in PostGIS
 
-is_invalid: false
-is_uploaded: false
-is_matched: false
-is_evaluated: false
+regions:
+  denmark:
+    bbox: [7.0, 53.0, 15.0, 57.0]
+    srid: 25832  # ETRS89 / UTM zone 32N
+  sicily_channel:
+    bbox: [9.5, 32.5, 19.5, 39.5]
+    srid: 32633  # WGS84 / UTM zone 33N

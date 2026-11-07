@@ -1,36 +1,22 @@
 """CFAR implementation for Sentinel-1 on Google Earth Engine.
 
 Classes:
-    Params - handles input parameters, files and table names
     Detector - Applies CFAR to a generic EE image object
     DetectorVessel - Applies `Detector` to a collection of scenes
     DetectorInfra - Applies `Detector` to an image composite
-    DetectorInfraShore - Applies `DetectoInfra` to onshore/land area
-    ExportFootprint - Applies `DetectorVessel` to get footprints only
 
 Modules:
     detector.py - the various `Detector` classes
     params.py - the Params class
-    footprint.py - the ExportFootprint class
     gee.py - functions to interact with GEE
     ranges.py - date, tile, window range iterators
-    cloud.py - gcs and bq helper functions
+    cloud.py - gcs helper functions
     utils.py - generic helper functions
     checks.py - name check helper functions
 
-Scripts:
-    detect_vessel.py - run vessel detector
-    detect_infra.py - run fixed-infra detector
-    detect_shore.py - run onshore detector
-    export_fprnts.py - run footprint generator
-    upload.py - download/process/upload detections
-    match.py - match detections to AIS
-    evaluate.py - assess matched detections
-
-    upload_fprnts.py
-    rasterize_fprnts.py
-    interpolate_ais.py
-    s1_positions.py
+Modified by the PMDS Illegal Fishing Detector team (2026): scene search
+restricted to a region, water mask clipped per scene/tile, task progress
+printed as a table, shoreline and footprint-only detectors removed.
 
 """
 import json
@@ -62,7 +48,7 @@ from .params import Params
 from .utils import get_min_max, to_bbox
 from .ranges import tile_range
 
-CONFIG = "config.yaml"
+CONFIG = str(Path(__file__).resolve().parents[1] / "config.yaml")
 
 # Uncomment to set a different account
 # ee.Authenticate()
@@ -287,6 +273,10 @@ class Detector(object):
         if start_time is None:
             start_time = datetime.now()
 
+        # Print header line
+        print(f"\n{'Time':<10} | {'Ready':<6} | {'Running':<7} | {'Completed':<11} | {'Duration (min)':<14} | {'Tasks/min':<9}")
+        print("-" * 80)
+
         while 1:
             n_ready = 0
             n_running = 0
@@ -304,18 +294,11 @@ class Detector(object):
                 n_running += 1 if state == "RUNNING" else 0
                 n_completed += 1 if state == "COMPLETED" else 0
 
+            current_time = datetime.now().strftime("%H:%M:%S")
             print(
-                (
-                    "ready: {}, running: {}, completed: {}/{}, "
-                    "minutes: {}, tasks/min: {}"
-                ).format(
-                    n_ready,
-                    n_running,
-                    n_completed,
-                    n_tasks,
-                    int(minutes),
-                    round(n_completed / float(minutes), 1),
-                )
+                f"{current_time:<10} | {n_ready:<6} | {n_running:<7} | "
+                f"{n_completed}/{n_tasks:<6} | {int(minutes):<14} | "
+                f"{round(n_completed / float(minutes), 1):<9}"
             )
             if (
                 n_ready == 0 and n_running == 0
@@ -391,21 +374,24 @@ class DetectorVessel(Detector):
         self.params.replace(comp_suffix="")
 
     def get_scenes(self):
-        """Get scenes overlapping the ocean for a date."""
+        """Get scenes overlapping the region of interest for a date."""
         if self.params.scene_id:
             return [self.params.scene_id]
 
-        date = self.params.date
-        satellite = self.params.satellite
-        ocean_vector_uri = self.params.ocean_vector_uri
-
-        ocean_vector = get_ocean_vector(ocean_vector_uri)
-        return get_scenes_over_ocean(date, ocean_vector, satellite)
+        ocean_vector = get_ocean_vector(self.params.ocean_vector_uri)
+        return get_scenes_over_ocean(
+            self.params.date,
+            ocean_vector,
+            self.params.satellite,
+            region=self.params.region,
+        )
 
     def get_footprint(self, img):
         """Get detection footprint (image intersect. water)."""
         water_raster = get_water_raster(
-            self.params.ocean_raster_uri, self.params.shore_buffer
+            self.params.ocean_raster_uri,
+            self.params.shore_buffer,
+            geometry=img.geometry(),
         )
         image_footprint = get_image_footprint(
             img,
@@ -543,7 +529,6 @@ class DetectorInfra(Detector):
         ocean_raster_uri = self.params.ocean_raster_uri
 
         ocean_vector = get_ocean_vector(ocean_vector_uri)
-        water_raster = get_water_raster(ocean_raster_uri, shore_buffer)
 
         tiles = self.get_tiles()
 
@@ -579,85 +564,11 @@ class DetectorInfra(Detector):
 
             print(f"{num_imgs} scenes in tile {tile_id}")
 
+            water_raster = get_water_raster(ocean_raster_uri, shore_buffer, geometry=tile)
+
             # Single band VH in BS (raster)
             composite = get_composite(image_list, min_num_images)
             composite = mask_water(composite, water_raster)
-            composite = clip_polygon(composite, tile)
-
-            self.detect(composite).export()
-
-        # One param file per region (not per tile)
-        self.check(every=check_every).save(folder)
-
-        return self
-
-
-# TODO: Shrink this class!
-class DetectorInfraShore(DetectorInfra):
-    """Run CFAR detector on a composite with custom geometry."""
-
-    def process(self, check_every=60, folder=None, skip_done=False):
-        """Run detect().export() on a composite for a region.
-
-        Input: a date range, a region, and specific params.
-        Output: a list of GEE tasks returned by export() to GCS.
-
-        """
-        self.params.replace(run_dir=folder)
-
-        if skip_done and self.param_exists():
-            print("Skipping", self.params.filename)
-            return self
-
-        date1, date2 = self.params.window_date
-        satellite = self.params.satellite
-        orbit = self.params.orbit
-        # shore_buffer = self.params.shore_buffer
-        min_num_images = self.params.min_num_images  # per pixel
-        max_num_images = self.params.max_num_images  # in collection
-        ocean_vector_uri = self.params.ocean_vector_uri
-        # ocean_raster_uri = self.params.ocean_raster_uri
-
-        ocean_vector = get_ocean_vector(ocean_vector_uri)
-        # water_raster = get_water_raster(ocean_raster_uri, shore_buffer)
-
-        tiles = self.get_tiles()
-
-        print(
-            f"Processing region {self.params.region_id} "
-            f"({len(tiles)} tiles "
-            f"{self.params.tile_dx}x{self.params.tile_dy} deg)"
-        )
-
-        self.scenes = []
-
-        for k, tile in enumerate(tiles):
-
-            tile_id = self.get_tile_id(k)
-            self.params.scene_id = tile_id
-            self.scenes.append(tile_id)
-
-            # ee.List(max_num_images)
-            image_list = get_images(
-                date1,
-                date2,
-                ocean_vector,
-                tile,
-                satellite,
-                orbit,
-                max_num_images,
-            )
-
-            # TODO: Check for tiles without images and continue?
-            # print(ee.length(image_list))
-            # if len(image_list) < min_num_images:
-            #     print('Not enought scenes in this region:', region_id)
-            #     return self
-
-            # Single band VH in BS (raster)
-            composite = get_composite(image_list, min_num_images)
-            # composite = mask_water(composite, water_raster)
-            composite = clip_polygon(composite, ocean_vector)
             composite = clip_polygon(composite, tile)
 
             self.detect(composite).export()

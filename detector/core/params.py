@@ -1,6 +1,12 @@
 """Class to handle input parameters, files and table names.
 
+Modified by the PMDS Illegal Fishing Detector team (2026): config path
+resolved from the package location, Cloud project and bucket read from
+the environment, commit lookup independent of the working directory,
+BigQuery dataset naming removed.
+
 """
+import os
 import re
 import yaml
 import json
@@ -11,7 +17,7 @@ from pathlib import Path
 
 from .checks import check_name, check_prefix, check_suffix
 
-CONFIG = "config.yaml"
+CONFIG = str(Path(__file__).resolve().parents[1] / "config.yaml")
 
 
 class Params(object):
@@ -29,14 +35,15 @@ class Params(object):
         # Read from YAML or JSON and set Attrs
         # self._set_attrs(self._read_file(config))
         self.__dict__.update(self._read_file(config))
+        # Environment takes precedence over config.yaml defaults,
+        # but never over the values recorded in a PARAMS file of a past run
+        if str(config).endswith(".yaml"):
+            self.project_id = os.getenv("GCP_PROJECT", self.project_id)
+            self.bucket = os.getenv("GCS_BUCKET", self.bucket)
         # NOTE: Generate subbucket only at save time
         # self.subbucket = self._get_subbucket()
-        self.dataset = self._get_dataset()
         self.commit = self._get_commit()
         self._check_names()
-
-    def _get_dataset(self):
-        return f"{self.dataset_prefix}{self.version}"
 
     def _get_subbucket(self):
         comp_suffix = self.comp_suffix if self.comp_suffix else ""
@@ -50,11 +57,19 @@ class Params(object):
         )
 
     def _get_commit(self):
-        return (
-            subprocess.check_output(["git", "rev-parse", "HEAD"])
-            .strip()
-            .decode("ascii")
-        )
+        """Commit of this code, recorded with every run (or 'unknown')."""
+        try:
+            return (
+                subprocess.check_output(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=Path(__file__).parent,
+                    stderr=subprocess.DEVNULL,
+                )
+                .strip()
+                .decode("ascii")
+            )
+        except (OSError, subprocess.CalledProcessError):
+            return "unknown"
 
     @property
     def subbucket_path(self):
@@ -101,15 +116,12 @@ class Params(object):
         return (Path(self.run_dir) / self.filename).exists()
 
     def _check_names(self):
-        check_prefix(self.dataset_prefix)
-        check_prefix(self.table_prefix)
         check_prefix(self.param_prefix)
         check_suffix(self.suffix)
         check_suffix(self.comp_suffix)
         check_suffix(self.stats_suffix)
         check_suffix(self.seive_suffix)
         check_name(self.subbucket)
-        check_name(self.dataset)
 
     def _update(self):
         """Regenerate dynamic params."""
