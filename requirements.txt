@@ -1,0 +1,12 @@
+# Earth Engine detection
+earthengine-api>=1.7
+numpy>=2.0
+pandas>=2.2
+python-dateutil>=2.9
+PyYAML>=6.0
+six>=1.16
+
+# Cloud Storage -> PostGIS
+gcsfs>=2025.1
+SQLAlchemy>=2.0
+psycopg2-binary>=2.9

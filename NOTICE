@@ -1,0 +1,29 @@
+Sentinel-1 Vessel Detection
+Copyright 2026 PMDS Illegal Fishing Detector team
+
+This project is a modified version of "paper-industrial-activity" by
+Global Fishing Watch:
+  https://github.com/GlobalFishingWatch/paper-industrial-activity
+Copyright 2023 Global Fishing Watch. Licensed under the Apache License 2.0,
+for noncommercial use only under CC BY-NC 4.0. See LICENSE.
+
+The original code accompanies:
+  Paolo et al. (2024). Satellite mapping reveals extensive industrial
+  activity at sea. Nature. https://doi.org/10.1038/s41586-023-06825-8
+
+Changes in this version:
+  - Public Earth Engine water masks replace private GFW assets; the shore
+    buffer is computed on the fly (detector/core/gee.py).
+  - Scene search restricted to named regions (detector/core/detector.py,
+    detector/core/regions.py, detector/config.yaml).
+  - Fixed the composite (infrastructure) detector, which referenced
+    undefined variables.
+  - Detections loaded into PostgreSQL/PostGIS instead of BigQuery
+    (detector/load_detections.py, sql/schema.sql).
+  - Vessels separated from fixed infrastructure in PostGIS
+    (detector/flag_infrastructure.py).
+  - Command-line interfaces for the detection scripts.
+  - Removed: deep learning models (nnets/), paper analyses (analysis/),
+    AIS/VMS matching in BigQuery, footprint and shoreline detectors.
+
+Modified files say so in their header.
